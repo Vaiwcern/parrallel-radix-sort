@@ -133,15 +133,15 @@ __global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
     int tid = threadIdx.x;
     int i = blockIdx.x * blockDim.x + tid;
 
-    // Load data into shared memory
+    // Load data into shared memory, pad with 0 if out of bounds
     if (i < n) {
         s_data[tid] = bit[i];
     } else {
-        s_data[tid] = 0;  // Padding if out of bounds
+        s_data[tid] = 0;
     }
     __syncthreads();
 
-    // Up-sweep phase: reduce the array in shared memory
+    // Up-sweep phase (reduction) - calculate partial sums
     for (int stride = 1; stride < blockDim.x; stride *= 2) {
         int val = 0;
         if (tid >= stride) {
@@ -154,7 +154,7 @@ __global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
         __syncthreads();
     }
 
-    // Down-sweep phase: propagate the sums back down the tree
+    // Down-sweep phase (propagate the sum back)
     for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
         int val = s_data[tid];
         if (tid < stride) {
@@ -167,7 +167,7 @@ __global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
         __syncthreads();
     }
 
-    // Write the result to global memory
+    // Write result to global memory
     if (i < n) {
         nOneBefore[i] = s_data[tid];
     }
@@ -218,6 +218,7 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     cudaFree(d_bit);
     cudaFree(d_nOneBefore);
 }
+
 
 
 // Radix Sort
