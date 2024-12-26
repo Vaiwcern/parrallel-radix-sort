@@ -200,7 +200,6 @@ void scan(int * d_in1, int n, int * d_out2, dim3 blkSize=dim3(1)) {
     {
         // 2. Compute each block's previous sum 
         //    by scanning array of blocks' sums
-        // TODO
         size_t temp = gridSize.x * sizeof(int);
         int * blkSums = (int*)malloc(temp);
         CHECK(cudaMemcpy(blkSums, d_blkSums, temp, cudaMemcpyDeviceToHost));
