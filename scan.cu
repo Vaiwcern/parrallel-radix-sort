@@ -1,4 +1,7 @@
 #include <stdio.h>
+#include <iostream> 
+
+using namespace std;
 
 #define CHECK(call)\
 {\
@@ -53,7 +56,7 @@ struct GpuTimer
 Scan within each block's data (work-efficient), write results to "out", and
 write each block's sum to "blkSums" if "blkSums" is not NULL.
 */
-__global__ void scanBlkKernel(int * in, int n, int * out, int * blkSums)
+__global__ void scanBlkKernel2(int * in, int n, int * out, int * blkSums)
 {
     // TODO
 	// 1. Each block loads data from GMEM to SMEM
@@ -102,84 +105,59 @@ __global__ void addPrevBlkSum(int * blkSumsScan, int * blkScans, int n)
         blkScans[i] += blkSumsScan[blockIdx.x];
 }
 
-
-/*
-useDevice = 0: use host
-useDevice = 2: use device, work-efficient scan
-*/
-void scan(int * in, int n, int * out,  
-        int useDevice=0, dim3 blkSize=dim3(1))
-{
-    GpuTimer timer; 
-    timer.Start();
-    if (useDevice == 0)
+void scan(int * in1, int n, int * out1, dim3 blkSize=dim3(1)) {
+    int blkDataSize;
+    printf("\nScan by device, work-efficient\n");
+    blkDataSize = 2 * blkSize.x;
+    // 1. Scan locally within each block, 
+    //    and collect blocks' sums into array
+    
+    int * d_in1, * d_out2, * d_blkSums;
+    size_t nBytes = n * sizeof(int);
+    CHECK(cudaMalloc(&d_in1, nBytes)); 
+    CHECK(cudaMalloc(&d_out2, nBytes)); 
+    dim3 gridSize((n - 1) / blkDataSize + 1);
+    if (gridSize.x > 1)
     {
-    	printf("\nScan by host\n");
-
-		out[0] = in[0];
-	    for (int i = 1; i < n; i++)
-	    {
-	    	out[i] = out[i - 1] + in[i];
-	    }
+        CHECK(cudaMalloc(&d_blkSums, gridSize.x * sizeof(int)));
     }
-    else // Use device
+    else
     {
-        int blkDataSize;
-        printf("\nScan by device, work-efficient\n");
-        blkDataSize = 2 * blkSize.x;
+        d_blkSums = NULL;
+    }
 
-        // 1. Scan locally within each block, 
-        //    and collect blocks' sums into array
-        
-        int * d_in, * d_out, * d_blkSums;
-        size_t nBytes = n * sizeof(int);
-        CHECK(cudaMalloc(&d_in, nBytes)); 
-        CHECK(cudaMalloc(&d_out, nBytes)); 
-        dim3 gridSize((n - 1) / blkDataSize + 1);
-        if (gridSize.x > 1)
-        {
-            CHECK(cudaMalloc(&d_blkSums, gridSize.x * sizeof(int)));
-        }
-        else
-        {
-            d_blkSums = NULL;
-        }
+    CHECK(cudaMemcpy(d_in1, in1, nBytes, cudaMemcpyHostToDevice));
 
-        CHECK(cudaMemcpy(d_in, in, nBytes, cudaMemcpyHostToDevice));
+    size_t smem = blkDataSize * sizeof(int);
+    scanBlkKernel2<<<gridSize, blkSize, smem>>>(d_in1, n, d_out2, d_blkSums);
+    cudaDeviceSynchronize();
+    CHECK(cudaGetLastError());
 
-        size_t smem = blkDataSize * sizeof(int);
-        scanBlkKernel<<<gridSize, blkSize, smem>>>(d_in, n, d_out, d_blkSums);
-        cudaDeviceSynchronize();
+    if (gridSize.x > 1)
+    {
+        // 2. Compute each block's previous sum 
+        //    by scanning array of blocks' sums
+        // TODO
+        size_t temp = gridSize.x * sizeof(int);
+        int * blkSums = (int*)malloc(temp);
+        CHECK(cudaMemcpy(blkSums, d_blkSums, temp, cudaMemcpyDeviceToHost));
+        for (int i = 1; i < gridSize.x; i++)
+            blkSums[i] += blkSums[i-1];
+        CHECK(cudaMemcpy(d_blkSums, blkSums, temp, cudaMemcpyHostToDevice));
+
+        // 3. Add each block's previous sum to its scan result in step 1
+        addPrevBlkSum<<<gridSize.x - 1, blkDataSize>>>(d_blkSums, d_out2, n);
+        CHECK(cudaDeviceSynchronize());
         CHECK(cudaGetLastError());
+        
+        free(blkSums);
+    }
 
-        if (gridSize.x > 1)
-        {
-            // 2. Compute each block's previous sum 
-            //    by scanning array of blocks' sums
-            // TODO
-            size_t temp = gridSize.x * sizeof(int);
-            int * blkSums = (int*)malloc(temp);
-            CHECK(cudaMemcpy(blkSums, d_blkSums, temp, cudaMemcpyDeviceToHost));
-            for (int i = 1; i < gridSize.x; i++)
-                blkSums[i] += blkSums[i-1];
-            CHECK(cudaMemcpy(d_blkSums, blkSums, temp, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(out1, d_out2, nBytes, cudaMemcpyDeviceToHost));
 
-            // 3. Add each block's previous sum to its scan result in step 1
-            addPrevBlkSum<<<gridSize.x - 1, blkDataSize>>>(d_blkSums, d_out, n);
-            CHECK(cudaDeviceSynchronize());
-            CHECK(cudaGetLastError());
-            
-            free(blkSums);
-        }
-
-        CHECK(cudaMemcpy(out, d_out, nBytes, cudaMemcpyDeviceToHost));
-
-        CHECK(cudaFree(d_in));
-        CHECK(cudaFree(d_out));
-        CHECK(cudaFree(d_blkSums));
-	}
-    timer.Stop();
-    printf("Processing time: %.3f ms\n", timer.Elapsed());
+    CHECK(cudaFree(d_in1));
+    CHECK(cudaFree(d_out2));
+    CHECK(cudaFree(d_blkSums));
 }
 
 void printDeviceInfo()
@@ -217,7 +195,7 @@ int main(int argc, char ** argv)
     printDeviceInfo();
 
     // SET UP INPUT SIZE
-    int n = (1 << 24) + 1;
+    int n = 5;
     printf("\nInput size: %d\n", n);
 
     // ALLOCATE MEMORIES
@@ -228,22 +206,28 @@ int main(int argc, char ** argv)
 
     // SET UP INPUT DATA
     for (int i = 0; i < n; i++)
-        in[i] = (int)(rand() & 0xFF) - 127; // random int in [-127, 128]
+        in[i] = (int)(rand() & 0xFF); // random int in [-127, 128]
 
     // DETERMINE BLOCK SIZE
-
-    dim3 blockSize(256); 
-    if (argc == 3) {
-        blockSize.x = atoi(argv[2]);
+    dim3 blockSize1(512); 
+    dim3 blockSize2(256); 
+    if (argc == 3)
+    {
+        blockSize1.x = atoi(argv[1]);
+        blockSize2.x = atoi(argv[2]);
     }
 
-    // SCAN BY HOST
-    scan(in, n, correctOut, 0);
+    for (int i = 0; i < n; ++i) {
+        cout << in[i] << "\n";
+    }
 
     // SCAN BY DEVICE, WORK-EFFICIENT
     memset(out, 0, n * sizeof(int)); // Reset out
-    scan(in, n, out, 2, blockSize);
-    checkCorrectness(out, correctOut, n);
+    scan(in, n, out, blockSize2);
+
+    for (int i = 0; i < n; ++i) {
+        cout << out[i] << "\n";
+    }
 
     // FREE MEMORIES
     free(in);

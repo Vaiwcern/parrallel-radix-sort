@@ -127,43 +127,119 @@ __global__ void sort_by_bit_kernel(uint32_t *a, uint32_t *out, int *bit, int *nO
     }
 }
 
-// Kernel 2: Work-efficient exclusive scan within each block
-__global__ void scanBlkKernel(int *in, int n, int *out, int *blkSums) {
-    extern __shared__ int s_data[];
-    int i1 = blockIdx.x * 2 * blockDim.x + threadIdx.x;
-    int i2 = i1 + blockDim.x;
 
-    if (i1 < n) s_data[threadIdx.x] = in[i1];
-    if (i2 < n) s_data[threadIdx.x + blockDim.x] = in[i2];
-    __syncthreads();
+/*
+Scan within each block's data (work-efficient), write results to "out", and
+write each block's sum to "blkSums" if "blkSums" is not NULL.
+*/
+__global__ void scanBlkKernel2(int * in, int n, int * out, int * blkSums)
+{
+    // TODO
+	// 1. Each block loads data from GMEM to SMEM
+	extern __shared__ int s_data[];
+	int i1 = blockIdx.x * 2 * blockDim.x + threadIdx.x;
+	int i2 = i1 + blockDim.x;
+	if (i1 < n)
+		s_data[threadIdx.x] = in[i1];
+	if (i2 < n)
+		s_data[threadIdx.x + blockDim.x] = in[i2];
+	__syncthreads();
 
-    // Reduction phase
-    for (int stride = 1; stride < 2 * blockDim.x; stride *= 2) {
-        int s_dataIdx = (threadIdx.x + 1) * 2 * stride - 1; // Avoid warp divergence
-        if (s_dataIdx < 2 * blockDim.x) s_data[s_dataIdx] += s_data[s_dataIdx - stride];
-        __syncthreads();
-    }
+	// 2. Each block does scan with data on SMEM
+	// 2.1. Reduction phase
+	for (int stride = 1; stride < 2 * blockDim.x; stride *= 2)
+	{
+		int s_dataIdx = (threadIdx.x + 1) * 2 * stride - 1; // To avoid warp divergence
+		if (s_dataIdx < 2 * blockDim.x)
+			s_data[s_dataIdx] += s_data[s_dataIdx - stride];
+		__syncthreads();
+	}
+	// 2.2. Post-reduction phase
+	for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
+	{
+		int s_dataIdx = (threadIdx.x + 1) * 2 * stride - 1 + stride; // Wow
+		if (s_dataIdx < 2 * blockDim.x)
+			s_data[s_dataIdx] += s_data[s_dataIdx - stride];
+		__syncthreads();
+	}
 
-    // Post-reduction phase
-    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
-        int s_dataIdx = (threadIdx.x + 1) * 2 * stride - 1 + stride;
-        if (s_dataIdx < 2 * blockDim.x) s_data[s_dataIdx] += s_data[s_dataIdx - stride];
-        __syncthreads();
-    }
+	// 3. Each block writes results from SMEM to GMEM
+	if (i1 < n)
+		out[i1] = s_data[threadIdx.x];
+	if (i2 < n)
+		out[i2] = s_data[threadIdx.x + blockDim.x];
 
-    if (i1 < n) out[i1] = s_data[threadIdx.x];
-    if (i2 < n) out[i2] = s_data[threadIdx.x + blockDim.x];
-
-    // Store the last element of each block to compute final sums later
-    if (blkSums != NULL && threadIdx.x == 0) {
-        blkSums[blockIdx.x] = s_data[2 * blockDim.x - 1];
-    }
+	if (blkSums != NULL && threadIdx.x == 0)
+		blkSums[blockIdx.x] = s_data[2 * blockDim.x - 1];
 }
 
-// Kernel 3: Add previous block sum to each element in block
-__global__ void addPrevBlkSum(int *blkSumsScan, int *blkScans, int n) {
+// TODO: You can define necessary functions here
+__global__ void addPrevBlkSum(int * blkSumsScan, int * blkScans, int n)
+{
     int i = blockIdx.x * blockDim.x + threadIdx.x + blockDim.x;
-    if (i < n) blkScans[i] += blkSumsScan[blockIdx.x];
+    if (i < n)
+        blkScans[i] += blkSumsScan[blockIdx.x];
+}
+
+
+/*
+useDevice = 0: use host
+useDevice = 1: use device, work-inefficient scan
+useDevice = 2: use device, work-efficient scan
+*/
+void scan(int * in1, int n, int * out1, dim3 blkSize=dim3(1)) {
+    int blkDataSize;
+    printf("\nScan by device, work-efficient\n");
+    blkDataSize = 2 * blkSize.x;
+    // 1. Scan locally within each block, 
+    //    and collect blocks' sums into array
+    
+    int * d_in1, * d_out2, * d_blkSums;
+    size_t nBytes = n * sizeof(int);
+    CHECK(cudaMalloc(&d_in1, nBytes)); 
+    CHECK(cudaMalloc(&d_out2, nBytes)); 
+    dim3 gridSize((n - 1) / blkDataSize + 1);
+    if (gridSize.x > 1)
+    {
+        CHECK(cudaMalloc(&d_blkSums, gridSize.x * sizeof(int)));
+    }
+    else
+    {
+        d_blkSums = NULL;
+    }
+
+    CHECK(cudaMemcpy(d_in1, in1, nBytes, cudaMemcpyHostToDevice));
+
+    size_t smem = blkDataSize * sizeof(int);
+    scanBlkKernel2<<<gridSize, blkSize, smem>>>(d_in1, n, d_out2, d_blkSums);
+    cudaDeviceSynchronize();
+    CHECK(cudaGetLastError());
+
+    if (gridSize.x > 1)
+    {
+        // 2. Compute each block's previous sum 
+        //    by scanning array of blocks' sums
+        // TODO
+        size_t temp = gridSize.x * sizeof(int);
+        int * blkSums = (int*)malloc(temp);
+        CHECK(cudaMemcpy(blkSums, d_blkSums, temp, cudaMemcpyDeviceToHost));
+        for (int i = 1; i < gridSize.x; i++)
+            blkSums[i] += blkSums[i-1];
+        CHECK(cudaMemcpy(d_blkSums, blkSums, temp, cudaMemcpyHostToDevice));
+
+        // 3. Add each block's previous sum to its scan result in step 1
+        addPrevBlkSum<<<gridSize.x - 1, blkDataSize>>>(d_blkSums, d_out2, n);
+        CHECK(cudaDeviceSynchronize());
+        CHECK(cudaGetLastError());
+        
+        free(blkSums);
+    }
+
+    CHECK(cudaMemcpy(out1, d_out2, nBytes, cudaMemcpyDeviceToHost));
+
+    CHECK(cudaFree(d_in1));
+    CHECK(cudaFree(d_out2));
+    CHECK(cudaFree(d_blkSums));
 }
 
 void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
@@ -189,14 +265,9 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
         int *h_bit = (int *)malloc(n * sizeof(int));
         int *h_nOneBefore = (int *)malloc(n * sizeof(int));
 
-        // Copy the bit array to host for sequential scan
+        // Copy the bit array to host 
         cudaMemcpy(h_bit, d_bit, n * sizeof(int), cudaMemcpyDeviceToHost);
-
-        // Sequential exclusive scan on host
-        h_nOneBefore[0] = 0;
-        for (int i = 1; i < n; i++) {
-            h_nOneBefore[i] = h_nOneBefore[i - 1] + h_bit[i - 1];
-        }
+        
 
         // Copy the result back to the device
         cudaMemcpy(d_nOneBefore, h_nOneBefore, n * sizeof(int), cudaMemcpyHostToDevice);
