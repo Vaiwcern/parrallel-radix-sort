@@ -50,45 +50,10 @@ struct GpuTimer
 };
 
 /*
-Scan within each block's data (work-inefficient), write results to "out", and 
-write each block's sum to "blkSums" if "blkSums" is not NULL.
-*/
-__global__ void scanBlkKernel(int * in, int n, int * out, int * blkSums)
-{   
-    // TODO
-    // 1. Each block loads data from GMEM to SMEM
-    extern __shared__ int s_data[]; // Size: blockDim.x element
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n)
-        s_data[threadIdx.x] = in[i];
-    else
-        s_data[threadIdx.x] = 0;
-    __syncthreads();
-
-    // 2. Each block does scan with data on SMEM
-    for (int stride = 1; stride < blockDim.x; stride *= 2)
-    {
-        int neededVal;
-        if (threadIdx.x >= stride)
-            neededVal = s_data[threadIdx.x - stride];
-        __syncthreads();
-        if (threadIdx.x >= stride)
-            s_data[threadIdx.x] += neededVal;
-        __syncthreads();
-    }
-
-    // 3. Each block write results from SMEM to GMEM
-    if (i < n)
-        out[i] = s_data[threadIdx.x];
-    if (blkSums != NULL && threadIdx.x == 0)
-        blkSums[blockIdx.x] = s_data[blockDim.x - 1];
-}
-
-/*
 Scan within each block's data (work-efficient), write results to "out", and
 write each block's sum to "blkSums" if "blkSums" is not NULL.
 */
-__global__ void scanBlkKernel2(int * in, int n, int * out, int * blkSums)
+__global__ void scanBlkKernel(int * in, int n, int * out, int * blkSums)
 {
     // TODO
 	// 1. Each block loads data from GMEM to SMEM
@@ -140,7 +105,6 @@ __global__ void addPrevBlkSum(int * blkSumsScan, int * blkScans, int n)
 
 /*
 useDevice = 0: use host
-useDevice = 1: use device, work-inefficient scan
 useDevice = 2: use device, work-efficient scan
 */
 void scan(int * in, int n, int * out,  
@@ -184,10 +148,7 @@ void scan(int * in, int n, int * out,
         CHECK(cudaMemcpy(d_in, in, nBytes, cudaMemcpyHostToDevice));
 
         size_t smem = blkDataSize * sizeof(int);
-        if (useDevice == 1)
-            scanBlkKernel<<<gridSize, blkSize, smem>>>(d_in, n, d_out, d_blkSums);
-        else
-            scanBlkKernel2<<<gridSize, blkSize, smem>>>(d_in, n, d_out, d_blkSums);
+        scanBlkKernel<<<gridSize, blkSize, smem>>>(d_in, n, d_out, d_blkSums);
         cudaDeviceSynchronize();
         CHECK(cudaGetLastError());
 
