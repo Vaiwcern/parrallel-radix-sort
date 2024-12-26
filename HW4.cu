@@ -177,17 +177,13 @@ __global__ void addPrevBlkSum(int * blkSumsScan, int * blkScans, int n)
         blkScans[i] += blkSumsScan[blockIdx.x];
 }
 
-void scan(int * in1, int n, int * out1, dim3 blkSize=dim3(1)) {
+void scan(int * d_in1, int n, int * d_out2, dim3 blkSize=dim3(1)) {
     int blkDataSize;
     printf("\nScan by device, work-efficient\n");
     blkDataSize = 2 * blkSize.x;
     // 1. Scan locally within each block, 
     //    and collect blocks' sums into array
-    
-    int * d_in1, * d_out2, * d_blkSums;
-    size_t nBytes = n * sizeof(int);
-    CHECK(cudaMalloc(&d_in1, nBytes)); 
-    CHECK(cudaMalloc(&d_out2, nBytes)); 
+
     dim3 gridSize((n - 1) / blkDataSize + 1);
     if (gridSize.x > 1)
     {
@@ -197,8 +193,6 @@ void scan(int * in1, int n, int * out1, dim3 blkSize=dim3(1)) {
     {
         d_blkSums = NULL;
     }
-
-    CHECK(cudaMemcpy(d_in1, in1, nBytes, cudaMemcpyHostToDevice));
 
     size_t smem = blkDataSize * sizeof(int);
     scanBlkKernel2<<<gridSize, blkSize, smem>>>(d_in1, n, d_out2, d_blkSums);
@@ -225,10 +219,6 @@ void scan(int * in1, int n, int * out1, dim3 blkSize=dim3(1)) {
         free(blkSums);
     }
 
-    CHECK(cudaMemcpy(out1, d_out2, nBytes, cudaMemcpyDeviceToHost));
-
-    CHECK(cudaFree(d_in1));
-    CHECK(cudaFree(d_out2));
     CHECK(cudaFree(d_blkSums));
 }
 
@@ -240,7 +230,7 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     cudaMalloc(&d_in, n * sizeof(uint32_t));
     cudaMalloc(&d_out, n * sizeof(uint32_t));
     cudaMalloc(&d_bit, n * sizeof(int));
-    cudaMalloc(&d_nOneBefore, n * sizeof(int));
+    cudaMalloc(&d_nOneBefore, (n + 1) * sizeof(int));
 
     cudaMemcpy(d_in, in, n * sizeof(uint32_t), cudaMemcpyHostToDevice);
 
@@ -252,19 +242,9 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
         cudaDeviceSynchronize();
 
         // Step 2: Perform exclusive scan sequentially on host
-        int *h_bit = (int *)malloc(n * sizeof(int));
-        int *h_nOneBefore = (int *)malloc((n + 1) * sizeof(int));
-        
-        h_nOneBefore[0] = 0;
-        cudaMemcpy(h_bit, d_bit, n * sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemset(d_nOneBefore, 0, sizeof(int));
 
-        scan(h_bit, n, h_nOneBefore + 1);
-
-        // Copy the result back to the device
-        cudaMemcpy(d_nOneBefore, h_nOneBefore, n * sizeof(int), cudaMemcpyHostToDevice);
-
-        free(h_bit);
-        free(h_nOneBefore);
+        scan(d_bit, n, d_nOneBefore + 1);
 
         // Step 3: Sort elements based on the current bit (kernel)
         sort_by_bit_kernel<<<numBlocks, blockSize>>>(d_in, d_out, d_bit, d_nOneBefore, n);
