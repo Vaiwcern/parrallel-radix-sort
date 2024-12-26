@@ -130,7 +130,6 @@ __global__ void sort_by_bit_kernel(uint32_t *a, uint32_t *out, int *bit, int *nO
 
 __global__ void scanBlkKernel2(int * in, int n, int * out, int * blkSums)
 {
-    // TODO
 	// 1. Each block loads data from GMEM to SMEM
 	extern __shared__ int s_data[];
 	int i1 = blockIdx.x * 2 * blockDim.x + threadIdx.x;
@@ -169,7 +168,6 @@ __global__ void scanBlkKernel2(int * in, int n, int * out, int * blkSums)
 		blkSums[blockIdx.x] = s_data[2 * blockDim.x - 1];
 }
 
-// TODO: You can define necessary functions here
 __global__ void addPrevBlkSum(int * blkSumsScan, int * blkScans, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x + blockDim.x;
@@ -179,7 +177,6 @@ __global__ void addPrevBlkSum(int * blkSumsScan, int * blkScans, int n)
 
 void scan(int * d_in1, int n, int * d_out2, dim3 blkSize=dim3(1)) {
     int blkDataSize;
-    printf("\nScan by device, work-efficient\n");
     blkDataSize = 2 * blkSize.x;
     // 1. Scan locally within each block, 
     //    and collect blocks' sums into array
