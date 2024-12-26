@@ -127,52 +127,50 @@ __global__ void sort_by_bit_kernel(uint32_t *a, uint32_t *out, int *bit, int *nO
     }
 }
 
-__global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
+// Kernel 2: Work-efficient exclusive scan within each block
+__global__ void scanBlkKernel(int *in, int n, int *out, int *blkSums) {
     extern __shared__ int s_data[];
+    int i1 = blockIdx.x * 2 * blockDim.x + threadIdx.x;
+    int i2 = i1 + blockDim.x;
 
-    int tid = threadIdx.x;
-    int i = blockIdx.x * blockDim.x + tid;
-
-    if (i < n) {
-        s_data[tid] = bit[i];
-    } else {
-        s_data[tid] = 0;
-    }
+    if (i1 < n) s_data[threadIdx.x] = in[i1];
+    if (i2 < n) s_data[threadIdx.x + blockDim.x] = in[i2];
     __syncthreads();
 
-    for (int stride = 1; stride < blockDim.x; stride *= 2) {
-        int val = 0;
-        if (tid >= stride) {
-            val = s_data[tid - stride];
-        }
-        __syncthreads();
-        if (tid >= stride) {
-            s_data[tid] += val;
-        }
+    // Reduction phase
+    for (int stride = 1; stride < 2 * blockDim.x; stride *= 2) {
+        int s_dataIdx = (threadIdx.x + 1) * 2 * stride - 1; // Avoid warp divergence
+        if (s_dataIdx < 2 * blockDim.x) s_data[s_dataIdx] += s_data[s_dataIdx - stride];
         __syncthreads();
     }
 
+    // Post-reduction phase
     for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
-        int val = s_data[tid];
-        if (tid < stride) {
-            s_data[tid] += s_data[tid + stride];
-        }
-        __syncthreads();
-        if (tid < stride) {
-            s_data[tid + stride] = val;
-        }
+        int s_dataIdx = (threadIdx.x + 1) * 2 * stride - 1 + stride;
+        if (s_dataIdx < 2 * blockDim.x) s_data[s_dataIdx] += s_data[s_dataIdx - stride];
         __syncthreads();
     }
 
-    if (i < n) {
-        nOneBefore[i] = s_data[tid];
+    if (i1 < n) out[i1] = s_data[threadIdx.x];
+    if (i2 < n) out[i2] = s_data[threadIdx.x + blockDim.x];
+
+    // Store the last element of each block to compute final sums later
+    if (blkSums != NULL && threadIdx.x == 0) {
+        blkSums[blockIdx.x] = s_data[2 * blockDim.x - 1];
     }
+}
+
+// Kernel 3: Add previous block sum to each element in block
+__global__ void addPrevBlkSum(int *blkSumsScan, int *blkScans, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + blockDim.x;
+    if (i < n) blkScans[i] += blkSumsScan[blockIdx.x];
 }
 
 void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     uint32_t *d_in, *d_out;
     int *d_bit, *d_nOneBefore;
 
+    // Allocate device memory
     cudaMalloc(&d_in, n * sizeof(uint32_t));
     cudaMalloc(&d_out, n * sizeof(uint32_t));
     cudaMalloc(&d_bit, n * sizeof(int));
@@ -181,16 +179,41 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     cudaMemcpy(d_in, in, n * sizeof(uint32_t), cudaMemcpyHostToDevice);
 
     int numBlocks = (n + blockSize - 1) / blockSize;
+
     for (int bitIdx = 0; bitIdx < 32; ++bitIdx) {
+        // Step 1: Extract bits (kernel)
         extract_bits_kernel<<<numBlocks, blockSize>>>(d_in, d_bit, n, bitIdx);
         cudaDeviceSynchronize();
 
-        exclusive_scan_kernel<<<numBlocks, blockSize, blockSize * sizeof(int)>>>(d_bit, d_nOneBefore, n);
+        // Step 2: Perform exclusive scan (work-efficient)
+        int *d_blkSums;
+        size_t smem = 2 * blockSize * sizeof(int);
+
+        cudaMalloc(&d_blkSums, numBlocks * sizeof(int));
+        scanBlkKernel<<<numBlocks, blockSize, smem>>>(d_bit, n, d_nOneBefore, d_blkSums);
         cudaDeviceSynchronize();
 
+        // Compute the sum of block-wide scans
+        int *blkSums = (int *)malloc(numBlocks * sizeof(int));
+        cudaMemcpy(blkSums, d_blkSums, numBlocks * sizeof(int), cudaMemcpyDeviceToHost);
+
+        for (int i = 1; i < numBlocks; i++) {
+            blkSums[i] += blkSums[i - 1];
+        }
+
+        cudaMemcpy(d_blkSums, blkSums, numBlocks * sizeof(int), cudaMemcpyHostToDevice);
+
+        // Step 3: Add the previous block's sum to the block's scan result
+        addPrevBlkSum<<<numBlocks - 1, blockSize>>>(d_blkSums, d_nOneBefore, n);
+        cudaDeviceSynchronize();
+
+        free(blkSums);
+
+        // Step 4: Sort elements based on the current bit (kernel)
         sort_by_bit_kernel<<<numBlocks, blockSize>>>(d_in, d_out, d_bit, d_nOneBefore, n);
         cudaDeviceSynchronize();
 
+        // Swap input and output arrays for the next iteration
         uint32_t *temp = d_in;
         d_in = d_out;
         d_out = temp;
@@ -198,11 +221,13 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
 
     cudaMemcpy(out, d_in, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 
+    // Free device memory
     cudaFree(d_in);
     cudaFree(d_out);
     cudaFree(d_bit);
     cudaFree(d_nOneBefore);
 }
+
 
 
 // Radix Sort
