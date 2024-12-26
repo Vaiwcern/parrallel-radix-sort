@@ -185,31 +185,26 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
         extract_bits_kernel<<<numBlocks, blockSize>>>(d_in, d_bit, n, bitIdx);
         cudaDeviceSynchronize();
 
-        // Step 2: Perform exclusive scan (work-efficient)
-        int *d_blkSums;
-        size_t smem = 2 * blockSize * sizeof(int);
+        // Step 2: Perform exclusive scan sequentially on host
+        int *h_bit = (int *)malloc(n * sizeof(int));
+        int *h_nOneBefore = (int *)malloc(n * sizeof(int));
 
-        cudaMalloc(&d_blkSums, numBlocks * sizeof(int));
-        scanBlkKernel<<<numBlocks, blockSize, smem>>>(d_bit, n, d_nOneBefore, d_blkSums);
-        cudaDeviceSynchronize();
+        // Copy the bit array to host for sequential scan
+        cudaMemcpy(h_bit, d_bit, n * sizeof(int), cudaMemcpyDeviceToHost);
 
-        // Compute the sum of block-wide scans
-        int *blkSums = (int *)malloc(numBlocks * sizeof(int));
-        cudaMemcpy(blkSums, d_blkSums, numBlocks * sizeof(int), cudaMemcpyDeviceToHost);
-
-        for (int i = 1; i < numBlocks; i++) {
-            blkSums[i] += blkSums[i - 1];
+        // Sequential exclusive scan on host
+        h_nOneBefore[0] = 0;
+        for (int i = 1; i < n; i++) {
+            h_nOneBefore[i] = h_nOneBefore[i - 1] + h_bit[i - 1];
         }
 
-        cudaMemcpy(d_blkSums, blkSums, numBlocks * sizeof(int), cudaMemcpyHostToDevice);
+        // Copy the result back to the device
+        cudaMemcpy(d_nOneBefore, h_nOneBefore, n * sizeof(int), cudaMemcpyHostToDevice);
 
-        // Step 3: Add the previous block's sum to the block's scan result
-        addPrevBlkSum<<<numBlocks - 1, blockSize>>>(d_blkSums, d_nOneBefore, n);
-        cudaDeviceSynchronize();
+        free(h_bit);
+        free(h_nOneBefore);
 
-        free(blkSums);
-
-        // Step 4: Sort elements based on the current bit (kernel)
+        // Step 3: Sort elements based on the current bit (kernel)
         sort_by_bit_kernel<<<numBlocks, blockSize>>>(d_in, d_out, d_bit, d_nOneBefore, n);
         cudaDeviceSynchronize();
 
@@ -219,6 +214,7 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
         d_out = temp;
     }
 
+    // Copy sorted result back to host
     cudaMemcpy(out, d_in, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 
     // Free device memory
@@ -227,8 +223,6 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     cudaFree(d_bit);
     cudaFree(d_nOneBefore);
 }
-
-
 
 // Radix Sort
 void sort(const uint32_t * in, int n, 
