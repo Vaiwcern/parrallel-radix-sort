@@ -161,16 +161,9 @@ void scan(int * in, int n, int * out,
     else // Use device
     {
         int blkDataSize;
-        if (useDevice == 1)
-        {
-            printf("\nScan by device, work-inefficient\n");
-            blkDataSize = blkSize.x;
-        }
-        else
-        {
-            printf("\nScan by device, work-efficient\n");
-            blkDataSize = 2 * blkSize.x;
-        }
+        printf("\nScan by device, work-efficient\n");
+        blkDataSize = 2 * blkSize.x;
+
         // 1. Scan locally within each block, 
         //    and collect blocks' sums into array
         
@@ -287,10 +280,6 @@ int main(int argc, char ** argv)
 
     // SCAN BY HOST
     scan(in, n, correctOut, 0);
-    
-    // SCAN BY DEVICE, WORK-INEFFICIENT
-    scan(in, n, out, 1, blockSize1);
-    checkCorrectness(out, correctOut, n);
 
     // SCAN BY DEVICE, WORK-EFFICIENT
     memset(out, 0, n * sizeof(int)); // Reset out
