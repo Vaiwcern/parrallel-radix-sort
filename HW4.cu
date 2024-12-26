@@ -66,7 +66,7 @@ void sortByHost(const uint32_t * in, int n,
 	// In each loop, sort elements according to the current bit from src to dst 
 	// (using STABLE counting sort)
     for (int bitIdx = 0; bitIdx < sizeof(uint32_t) * 8; bitIdx++)
-    { 
+    {
         // Extract bits
         for (int i = 0; i < n; i++)
             bits[i] = (src[i] >> bitIdx) & 1;
@@ -103,26 +103,65 @@ void sortByHost(const uint32_t * in, int n,
     free(nOnesBefore);
 }
 
-__global__ void radix_sort_kernel(uint32_t *a, uint32_t *out, int n, int bitIdx, int *bit, int *nOneBefore) {
+// Kernel 1: Extract bit at position `bitIdx`
+__global__ void extract_bits_kernel(uint32_t *a, int *bit, int n, int bitIdx) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    
-    // Step 1: Extract the bit at position `bitIdx`
     if (tid < n) {
         bit[tid] = (a[tid] >> bitIdx) & 1;
     }
-    
+}
+
+// Kernel 2: Exclusive Scan to compute nOneBefore
+__global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
+    extern __shared__ int s_data[];
+
+    int tid = threadIdx.x;
+    int i = blockIdx.x * blockDim.x + tid;
+
+    // Load data into shared memory
+    if (i < n) {
+        s_data[tid] = bit[i];
+    } else {
+        s_data[tid] = 0;  // Padding if out of bounds
+    }
     __syncthreads();
-    
-    // Step 2: Calculate nOneBefore (exclusive scan of `bit`)
-    // We need to calculate the prefix sum (exclusive scan) of the bits array
-    int offset = 1;
-    if (tid < n) {
-        nOneBefore[tid] = (tid == 0) ? 0 : nOneBefore[tid - 1] + bit[tid - 1];
+
+    // Reduction phase (up-sweep)
+    for (int stride = 1; stride < blockDim.x; stride *= 2) {
+        int val = 0;
+        if (tid >= stride) {
+            val = s_data[tid - stride];
+        }
+        __syncthreads();
+        if (tid >= stride) {
+            s_data[tid] += val;
+        }
+        __syncthreads();
     }
 
-    __syncthreads();
+    // Post-reduction phase (down-sweep)
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+        int val = s_data[tid];
+        if (tid < stride) {
+            s_data[tid] += s_data[tid + stride];
+        }
+        __syncthreads();
+        if (tid < stride) {
+            s_data[tid + stride] = val;
+        }
+        __syncthreads();
+    }
 
-    // Step 3: Calculate new position (sorting based on current bit)
+    // Write result to global memory
+    if (i < n) {
+        nOneBefore[i] = s_data[tid];
+    }
+}
+
+// Kernel 3: Sort elements based on the current bit
+__global__ void sort_by_bit_kernel(uint32_t *a, uint32_t *out, int *bit, int *nOneBefore, int n) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    
     if (tid < n) {
         int numZeros = n - nOneBefore[n - 1] - bit[n - 1];
         int rank;
@@ -139,28 +178,35 @@ __global__ void radix_sort_kernel(uint32_t *a, uint32_t *out, int n, int bitIdx,
 void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     uint32_t *d_in, *d_out;
     int *d_bit, *d_nOneBefore;
-    
+
     // Allocate device memory
     cudaMalloc(&d_in, n * sizeof(uint32_t));
     cudaMalloc(&d_out, n * sizeof(uint32_t));
     cudaMalloc(&d_bit, n * sizeof(int));
     cudaMalloc(&d_nOneBefore, n * sizeof(int));
-    
+
     // Copy input data to device
     cudaMemcpy(d_in, in, n * sizeof(uint32_t), cudaMemcpyHostToDevice);
 
-    // Launch kernel for each bit position (assuming 32 bits in uint32_t)
+    // Launch kernels for each bit position (assuming 32 bits in uint32_t)
     int numBlocks = (n + blockSize - 1) / blockSize;
     for (int bitIdx = 0; bitIdx < 32; ++bitIdx) {
-        radix_sort_kernel<<<numBlocks, blockSize>>>(d_in, d_out, n, bitIdx, d_bit, d_nOneBefore);
+        // Step 1: Extract bits
+        extract_bits_kernel<<<numBlocks, blockSize>>>(d_in, d_bit, n, bitIdx);
+        cudaDeviceSynchronize();
         
-        // Swap the input and output arrays for the next iteration
+        // Step 2: Compute nOneBefore (exclusive scan)
+        exclusive_scan_kernel<<<numBlocks, blockSize, blockSize * sizeof(int)>>>(d_bit, d_nOneBefore, n);
+        cudaDeviceSynchronize();
+
+        // Step 3: Sort elements based on the current bit
+        sort_by_bit_kernel<<<numBlocks, blockSize>>>(d_in, d_out, d_bit, d_nOneBefore, n);
+        cudaDeviceSynchronize();
+
+        // Swap input and output arrays for the next iteration
         uint32_t *temp = d_in;
         d_in = d_out;
         d_out = temp;
-        
-        // Synchronize to ensure that the previous iteration is complete before moving to the next
-        cudaDeviceSynchronize();
     }
 
     // Copy result back to host
@@ -172,7 +218,6 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     cudaFree(d_bit);
     cudaFree(d_nOneBefore);
 }
-
 
 // Radix Sort
 void sort(const uint32_t * in, int n, 
