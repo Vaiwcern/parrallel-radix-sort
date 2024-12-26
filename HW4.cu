@@ -267,9 +267,9 @@ int main(int argc, char ** argv)
     printArray(correctOut, n); // For test by eye
     
     // SORT BY DEVICE
-    // sort(in, n, out, true, blockSize);
-    // printArray(out, n); // For test by eye
-    // checkCorrectness(out, correctOut, n);
+    sort(in, n, out, true, blockSize);
+    printArray(out, n); // For test by eye
+    checkCorrectness(out, correctOut, n);
 
     // FREE MEMORIES
     free(in);
