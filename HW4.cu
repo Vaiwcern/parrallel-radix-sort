@@ -174,32 +174,47 @@ __global__ void sort_by_bit_kernel(uint32_t *a, uint32_t *out, int *bit, int *nO
     }
 }
 
-// Parallel Radix Sort
+// Parallel Radix Sort (with step 2 implemented in a sequential way)
 void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     uint32_t *d_in, *d_out;
     int *d_bit, *d_nOneBefore;
-
+    
     // Allocate device memory
     cudaMalloc(&d_in, n * sizeof(uint32_t));
     cudaMalloc(&d_out, n * sizeof(uint32_t));
     cudaMalloc(&d_bit, n * sizeof(int));
     cudaMalloc(&d_nOneBefore, n * sizeof(int));
-
+    
     // Copy input data to device
     cudaMemcpy(d_in, in, n * sizeof(uint32_t), cudaMemcpyHostToDevice);
 
-    // Launch kernels for each bit position (assuming 32 bits in uint32_t)
+    // Launch kernel for each bit position (assuming 32 bits in uint32_t)
     int numBlocks = (n + blockSize - 1) / blockSize;
     for (int bitIdx = 0; bitIdx < 32; ++bitIdx) {
-        // Step 1: Extract bits
+        // Step 1: Extract bits (kernel)
         extract_bits_kernel<<<numBlocks, blockSize>>>(d_in, d_bit, n, bitIdx);
         cudaDeviceSynchronize();
         
-        // Step 2: Compute nOneBefore (exclusive scan)
-        exclusive_scan_kernel<<<numBlocks, blockSize, blockSize * sizeof(int)>>>(d_bit, d_nOneBefore, n);
-        cudaDeviceSynchronize();
+        // Step 2: Compute nOneBefore (exclusive scan) - Sequential implementation
+        int *h_bit = (int *)malloc(n * sizeof(int));
+        int *h_nOneBefore = (int *)malloc(n * sizeof(int));
 
-        // Step 3: Sort elements based on the current bit
+        cudaMemcpy(h_bit, d_bit, n * sizeof(int), cudaMemcpyDeviceToHost);
+
+        // Exclusive scan on host
+        h_nOneBefore[0] = 0;
+        for (int i = 1; i < n; i++) {
+            h_nOneBefore[i] = h_nOneBefore[i - 1] + h_bit[i - 1];
+        }
+
+        // Copy result back to device
+        cudaMemcpy(d_nOneBefore, h_nOneBefore, n * sizeof(int), cudaMemcpyHostToDevice);
+
+        // Free host memory
+        free(h_bit);
+        free(h_nOneBefore);
+
+        // Step 3: Sort elements based on the current bit (kernel)
         sort_by_bit_kernel<<<numBlocks, blockSize>>>(d_in, d_out, d_bit, d_nOneBefore, n);
         cudaDeviceSynchronize();
 
@@ -218,6 +233,7 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     cudaFree(d_bit);
     cudaFree(d_nOneBefore);
 }
+
 
 // Radix Sort
 void sort(const uint32_t * in, int n, 
