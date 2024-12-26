@@ -270,12 +270,10 @@ int main(int argc, char ** argv)
         in[i] = (int)(rand() & 0xFF) - 127; // random int in [-127, 128]
 
     // DETERMINE BLOCK SIZE
-    dim3 blockSize1(512); 
-    dim3 blockSize2(256); 
-    if (argc == 3)
-    {
-        blockSize1.x = atoi(argv[1]);
-        blockSize2.x = atoi(argv[2]);
+
+    dim3 blockSize(256); 
+    if (argc == 3) {
+        blockSize.x = atoi(argv[2]);
     }
 
     // SCAN BY HOST
@@ -283,7 +281,7 @@ int main(int argc, char ** argv)
 
     // SCAN BY DEVICE, WORK-EFFICIENT
     memset(out, 0, n * sizeof(int)); // Reset out
-    scan(in, n, out, 2, blockSize2);
+    scan(in, n, out, 2, blockSize);
     checkCorrectness(out, correctOut, n);
 
     // FREE MEMORIES
