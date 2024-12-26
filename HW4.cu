@@ -175,8 +175,8 @@ int main(int argc, char ** argv)
     printDeviceInfo();
 
     // SET UP INPUT SIZE
-    //int n = 50; // For test by eye
-    int n = (1 << 24) + 1;
+    int n = 50; // For test by eye
+    // int n = (1 << 24) + 1;
     printf("\nInput size: %d\n", n);
 
     // ALLOCATE MEMORIES
@@ -188,8 +188,8 @@ int main(int argc, char ** argv)
     // SET UP INPUT DATA
     for (int i = 0; i < n; i++)
     {
-        //in[i] = rand() % 255; // For test by eye
-        in[i] = rand();
+        in[i] = rand() % 255; // For test by eye
+        // in[i] = rand();
     }
     //printArray(in, n); // For test by eye
 
@@ -200,12 +200,12 @@ int main(int argc, char ** argv)
 
     // SORT BY HOST
     sort(in, n, correctOut);
-    //printArray(correctOut, n); // For test by eye
+    printArray(correctOut, n); // For test by eye
     
     // SORT BY DEVICE
-    sort(in, n, out, true, blockSize);
-    //printArray(out, n); // For test by eye
-    checkCorrectness(out, correctOut, n);
+    // sort(in, n, out, true, blockSize);
+    // printArray(out, n); // For test by eye
+    // checkCorrectness(out, correctOut, n);
 
     // FREE MEMORIES
     free(in);
