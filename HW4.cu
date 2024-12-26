@@ -244,7 +244,8 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
         // Step 2: Perform exclusive scan sequentially on host
         cudaMemset(d_nOneBefore, 0, sizeof(int));
 
-        scan(d_bit, n, d_nOneBefore + 1);
+        dim3 blkSize = dim3(blockSize);
+        scan(d_bit, n, d_nOneBefore + 1, blkSize);
 
         // Step 3: Sort elements based on the current bit (kernel)
         sort_by_bit_kernel<<<numBlocks, blockSize>>>(d_in, d_out, d_bit, d_nOneBefore, n);
