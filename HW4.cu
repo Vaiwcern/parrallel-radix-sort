@@ -111,53 +111,6 @@ __global__ void extract_bits_kernel(uint32_t *a, int *bit, int n, int bitIdx) {
     }
 }
 
-// Kernel 2: Exclusive Scan to compute nOneBefore
-__global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
-    extern __shared__ int s_data[];
-
-    int tid = threadIdx.x;
-    int i = blockIdx.x * blockDim.x + tid;
-
-    // Load data into shared memory
-    if (i < n) {
-        s_data[tid] = bit[i];
-    } else {
-        s_data[tid] = 0;  // Padding if out of bounds
-    }
-    __syncthreads();
-
-    // Reduction phase (up-sweep)
-    for (int stride = 1; stride < blockDim.x; stride *= 2) {
-        int val = 0;
-        if (tid >= stride) {
-            val = s_data[tid - stride];
-        }
-        __syncthreads();
-        if (tid >= stride) {
-            s_data[tid] += val;
-        }
-        __syncthreads();
-    }
-
-    // Post-reduction phase (down-sweep)
-    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
-        int val = s_data[tid];
-        if (tid < stride) {
-            s_data[tid] += s_data[tid + stride];
-        }
-        __syncthreads();
-        if (tid < stride) {
-            s_data[tid + stride] = val;
-        }
-        __syncthreads();
-    }
-
-    // Write result to global memory
-    if (i < n) {
-        nOneBefore[i] = s_data[tid];
-    }
-}
-
 // Kernel 3: Sort elements based on the current bit
 __global__ void sort_by_bit_kernel(uint32_t *a, uint32_t *out, int *bit, int *nOneBefore, int n) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
