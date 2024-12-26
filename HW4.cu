@@ -133,7 +133,6 @@ __global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
     int tid = threadIdx.x;
     int i = blockIdx.x * blockDim.x + tid;
 
-    // Load data into shared memory, pad with 0 if out of bounds
     if (i < n) {
         s_data[tid] = bit[i];
     } else {
@@ -141,7 +140,6 @@ __global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
     }
     __syncthreads();
 
-    // Up-sweep phase (reduction) - calculate partial sums
     for (int stride = 1; stride < blockDim.x; stride *= 2) {
         int val = 0;
         if (tid >= stride) {
@@ -154,7 +152,6 @@ __global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
         __syncthreads();
     }
 
-    // Down-sweep phase (propagate the sum back)
     for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
         int val = s_data[tid];
         if (tid < stride) {
@@ -167,58 +164,45 @@ __global__ void exclusive_scan_kernel(int *bit, int *nOneBefore, int n) {
         __syncthreads();
     }
 
-    // Write result to global memory
     if (i < n) {
         nOneBefore[i] = s_data[tid];
     }
 }
 
-
-// Parallel Radix Sort (with step 2 implemented in a sequential way)
 void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
     uint32_t *d_in, *d_out;
     int *d_bit, *d_nOneBefore;
 
-    // Allocate device memory
     cudaMalloc(&d_in, n * sizeof(uint32_t));
     cudaMalloc(&d_out, n * sizeof(uint32_t));
     cudaMalloc(&d_bit, n * sizeof(int));
     cudaMalloc(&d_nOneBefore, n * sizeof(int));
 
-    // Copy input data to device
     cudaMemcpy(d_in, in, n * sizeof(uint32_t), cudaMemcpyHostToDevice);
 
-    // Launch kernel for each bit position (assuming 32 bits in uint32_t)
     int numBlocks = (n + blockSize - 1) / blockSize;
     for (int bitIdx = 0; bitIdx < 32; ++bitIdx) {
-        // Step 1: Extract bits (kernel)
         extract_bits_kernel<<<numBlocks, blockSize>>>(d_in, d_bit, n, bitIdx);
         cudaDeviceSynchronize();
 
-        // Step 2: Compute nOneBefore (parallel exclusive scan)
         exclusive_scan_kernel<<<numBlocks, blockSize, blockSize * sizeof(int)>>>(d_bit, d_nOneBefore, n);
         cudaDeviceSynchronize();
 
-        // Step 3: Sort elements based on the current bit (kernel)
         sort_by_bit_kernel<<<numBlocks, blockSize>>>(d_in, d_out, d_bit, d_nOneBefore, n);
         cudaDeviceSynchronize();
 
-        // Swap input and output arrays for the next iteration
         uint32_t *temp = d_in;
         d_in = d_out;
         d_out = temp;
     }
 
-    // Copy result back to host
     cudaMemcpy(out, d_in, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 
-    // Free device memory
     cudaFree(d_in);
     cudaFree(d_out);
     cudaFree(d_bit);
     cudaFree(d_nOneBefore);
 }
-
 
 
 // Radix Sort
