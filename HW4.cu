@@ -183,7 +183,7 @@ void scan(int * d_in1, int n, int * d_out2, dim3 blkSize=dim3(1)) {
     blkDataSize = 2 * blkSize.x;
     // 1. Scan locally within each block, 
     //    and collect blocks' sums into array
-
+    int * d_blkSums;
     dim3 gridSize((n - 1) / blkDataSize + 1);
     if (gridSize.x > 1)
     {
