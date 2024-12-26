@@ -128,10 +128,6 @@ __global__ void sort_by_bit_kernel(uint32_t *a, uint32_t *out, int *bit, int *nO
 }
 
 
-/*
-Scan within each block's data (work-efficient), write results to "out", and
-write each block's sum to "blkSums" if "blkSums" is not NULL.
-*/
 __global__ void scanBlkKernel2(int * in, int n, int * out, int * blkSums)
 {
     // TODO
@@ -181,12 +177,6 @@ __global__ void addPrevBlkSum(int * blkSumsScan, int * blkScans, int n)
         blkScans[i] += blkSumsScan[blockIdx.x];
 }
 
-
-/*
-useDevice = 0: use host
-useDevice = 1: use device, work-inefficient scan
-useDevice = 2: use device, work-efficient scan
-*/
 void scan(int * in1, int n, int * out1, dim3 blkSize=dim3(1)) {
     int blkDataSize;
     printf("\nScan by device, work-efficient\n");
@@ -263,11 +253,12 @@ void sortByDevice(const uint32_t *in, int n, uint32_t *out, int blockSize) {
 
         // Step 2: Perform exclusive scan sequentially on host
         int *h_bit = (int *)malloc(n * sizeof(int));
-        int *h_nOneBefore = (int *)malloc(n * sizeof(int));
-
-        // Copy the bit array to host 
-        cudaMemcpy(h_bit, d_bit, n * sizeof(int), cudaMemcpyDeviceToHost);
+        int *h_nOneBefore = (int *)malloc((n + 1) * sizeof(int));
         
+        h_nOneBefore[0] = 0;
+        cudaMemcpy(h_bit, d_bit, n * sizeof(int), cudaMemcpyDeviceToHost);
+
+        scan(h_bit, n, h_nOneBefore + 1);
 
         // Copy the result back to the device
         cudaMemcpy(d_nOneBefore, h_nOneBefore, n * sizeof(int), cudaMemcpyHostToDevice);
